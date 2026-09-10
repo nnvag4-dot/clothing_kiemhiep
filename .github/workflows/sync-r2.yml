@@ -1,4 +1,4 @@
-name: Sync Changed Images to Cloudflare R2
+name: Sync Images to Cloudflare R2
 
 on:
   push:
@@ -13,6 +13,7 @@ on:
       - '**/*.webp'
   workflow_dispatch:
 
+# Tự động hủy job cũ nếu bạn vừa push commit mới (tránh nghẽn hàng chờ)
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -23,23 +24,18 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
 
       - name: Install Rclone
         run: sudo apt-get update && sudo apt-get install -y rclone
 
-      - name: Sync Only Changed Files
+      - name: Configure Rclone & Sync to R2
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
         run: |
-          # Làm sạch biến môi trường (xóa khoảng trắng thừa nếu có)
-          ACCOUNT_ID=$(echo "${R2_ACCOUNT_ID}" | xargs)
-          BUCKET_NAME=$(echo "${R2_BUCKET_NAME}" | xargs)
-
+          # 1. Tạo file cấu hình rclone
           mkdir -p ~/.config/rclone
           cat <<EOF > ~/.config/rclone/rclone.conf
           [r2]
@@ -47,36 +43,16 @@ jobs:
           provider = Cloudflare
           access_key_id = ${R2_ACCESS_KEY_ID}
           secret_access_key = ${R2_SECRET_ACCESS_KEY}
-          endpoint = https://${ACCOUNT_ID}.r2.cloudflarestorage.com
-          region = auto
+          endpoint = https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com
+          acl = public-read
           EOF
 
-          # Lấy danh sách file thêm/sửa
-          git diff --name-only --diff-filter=AM HEAD~1 HEAD | grep -E '\.(png|PNG|jpg|jpeg|webp)$' > added_files.txt || true
-
-          # Lấy danh sách file xóa
-          git diff --name-only --diff-filter=D HEAD~1 HEAD | grep -E '\.(png|PNG|jpg|jpeg|webp)$' > deleted_files.txt || true
-
-          # Upload an toàn từng dòng file (Thêm cờ --no-check-dest để buộc ghi đè không bị 403)
-          if [ -s added_files.txt ]; then
-            echo "Uploading added/modified files:"
-            while IFS= read -r file; do
-              if [ -f "$file" ]; then
-                echo "Syncing: $file"
-                rclone copyto --no-check-dest "$file" "r2:${BUCKET_NAME}/$file"
-              fi
-            done < added_files.txt
-          else
-            echo "No added or modified image files."
-          fi
-
-          # Xóa an toàn từng dòng file
-          if [ -s deleted_files.txt ]; then
-            echo "Deleting removed files from R2:"
-            while IFS= read -r file; do
-              echo "Deleting: $file"
-              rclone deletefile "r2:${BUCKET_NAME}/$file"
-            done < deleted_files.txt
-          else
-            echo "No deleted image files."
-          fi
+          # 2. Chạy đồng bộ siêu tốc 64 luồng song song cho 40.000 file
+          rclone sync . r2:${R2_BUCKET_NAME} \
+            --transfers 64 \
+            --checkers 128 \
+            --fast-list \
+            --delete-after \
+            --exclude ".git/**" \
+            --exclude ".github/**" \
+            --progress
