@@ -36,7 +36,6 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
         run: |
-          # 1. Cấu hình Rclone (Đã xóa dòng acl=public-read gây lỗi 403 trên R2)
           mkdir -p ~/.config/rclone
           cat <<EOF > ~/.config/rclone/rclone.conf
           [r2]
@@ -45,34 +44,35 @@ jobs:
           access_key_id = ${R2_ACCESS_KEY_ID}
           secret_access_key = ${R2_SECRET_ACCESS_KEY}
           endpoint = https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com
+          region = auto
           EOF
 
-          # 2. Lấy danh sách file ảnh mới / sửa (Added / Modified)
-          ADDED_FILES=$(git diff --name-only --diff-filter=AM HEAD~1 HEAD | grep -E '\.(png|PNG|jpg|jpeg|webp)$' || true)
+          # Lấy danh sách file thêm/sửa
+          git diff --name-only --diff-filter=AM HEAD~1 HEAD | grep -E '\.(png|PNG|jpg|jpeg|webp)$' > added_files.txt || true
 
-          # 3. Lấy danh sách file ảnh bị xóa (Deleted)
-          DELETED_FILES=$(git diff --name-only --diff-filter=D HEAD~1 HEAD | grep -E '\.(png|PNG|jpg|jpeg|webp)$' || true)
+          # Lấy danh sách file xóa
+          git diff --name-only --diff-filter=D HEAD~1 HEAD | grep -E '\.(png|PNG|jpg|jpeg|webp)$' > deleted_files.txt || true
 
-          # 4. Upload các file mới / sửa lên Cloudflare R2
-          if [ -n "$ADDED_FILES" ]; then
+          # Upload an toàn từng dòng file
+          if [ -s added_files.txt ]; then
             echo "Uploading added/modified files:"
-            echo "$ADDED_FILES"
-            for file in $ADDED_FILES; do
+            while IFS= read -r file; do
               if [ -f "$file" ]; then
+                echo "Syncing: $file"
                 rclone copyto "$file" "r2:${R2_BUCKET_NAME}/$file"
               fi
-            done
+            done < added_files.txt
           else
             echo "No added or modified image files."
           fi
 
-          # 5. Xóa các file đã bị xóa trên GitHub khỏi Cloudflare R2
-          if [ -n "$DELETED_FILES" ]; then
+          # Xóa an toàn từng dòng file
+          if [ -s deleted_files.txt ]; then
             echo "Deleting removed files from R2:"
-            echo "$DELETED_FILES"
-            for file in $DELETED_FILES; do
+            while IFS= read -r file; do
+              echo "Deleting: $file"
               rclone deletefile "r2:${R2_BUCKET_NAME}/$file"
-            done
+            done < deleted_files.txt
           else
             echo "No deleted image files."
           fi
