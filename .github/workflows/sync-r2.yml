@@ -45,7 +45,7 @@ jobs:
           # 2. Bắt danh sách file bị xóa bằng Git
           git diff --name-only --diff-filter=D HEAD~1 HEAD | grep -iE '\.(png|jpg|jpeg|webp)$' > deleted_files.txt || true
 
-          # 3. Upload file thay đổi song song an toàn (25 luồng tối ưu cho 2 vCPU)
+          # 3. Upload file thay đổi song song (25 luồng tối ưu)
           if [ -s added_files.txt ]; then
             echo "Uploading changed files in parallel (25 workers):"
             cat added_files.txt
@@ -61,16 +61,39 @@ jobs:
             echo "No added or modified image files."
           fi
 
-          # 4. Xóa file đã bị xóa trên GitHub khỏi R2 (25 luồng)
+          # 4. Xóa siêu tốc (Gộp 1.000 file/request - Xóa 20.000 file chỉ mất vài giây)
           if [ -s deleted_files.txt ]; then
-            echo "Deleting removed files in parallel (25 workers):"
+            echo "Deleting removed files (Batching 1000 items per request):"
             cat deleted_files.txt
 
-            export ENDPOINT R2_BUCKET_NAME
-            cat deleted_files.txt | xargs -P 25 -I {} bash -c '
-              echo "Deleting: $1"
-              aws s3 rm "s3://${R2_BUCKET_NAME}/$1" --endpoint-url "$ENDPOINT"
-            ' _ {}
+            # Chuyển danh sách file xóa sang định dạng JSON cho Batch Delete API
+            python3 -c '
+import json, sys
+
+bucket = "'"${R2_BUCKET_NAME}"'"
+endpoint = "'"${ENDPOINT}"'"
+
+with open("deleted_files.txt") as f:
+    files = [line.strip() for line in f if line.strip()]
+
+# Chia nhỏ danh sách thành từng cụm 1000 file
+chunk_size = 1000
+for i in range(0, len(files), chunk_size):
+    chunk = files[i:i + chunk_size]
+    payload = {"Objects": [{"Key": key} for key in chunk], "Quiet": True}
+    with open("batch_delete.json", "w") as out:
+        json.dump(payload, out)
+    
+    import subprocess
+    cmd = [
+        "aws", "s3api", "delete-objects",
+        "--bucket", bucket,
+        "--delete", "file://batch_delete.json",
+        "--endpoint-url", endpoint
+    ]
+    subprocess.run(cmd, check=True)
+    print(f"Deleted batch {i // chunk_size + 1}: {len(chunk)} files")
+'
           else
             echo "No deleted image files."
           fi
