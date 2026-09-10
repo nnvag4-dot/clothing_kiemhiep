@@ -13,7 +13,6 @@ on:
       - '**/*.webp'
   workflow_dispatch:
 
-# Tự động hủy job cũ nếu bạn vừa push commit mới (tránh nghẽn hàng chờ)
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -24,18 +23,20 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - name: Install Rclone
         run: sudo apt-get update && sudo apt-get install -y rclone
 
-      - name: Configure Rclone & Sync to R2
+      - name: Sync Only Changed Images
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
         run: |
-          # 1. Tạo file cấu hình rclone
+          # 1. Cấu hình Rclone
           mkdir -p ~/.config/rclone
           cat <<EOF > ~/.config/rclone/rclone.conf
           [r2]
@@ -44,15 +45,30 @@ jobs:
           access_key_id = ${R2_ACCESS_KEY_ID}
           secret_access_key = ${R2_SECRET_ACCESS_KEY}
           endpoint = https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com
-          acl = public-read
           EOF
 
-          # 2. Chạy đồng bộ siêu tốc 64 luồng song song cho 40.000 file
-          rclone sync . r2:${R2_BUCKET_NAME} \
-            --transfers 64 \
-            --checkers 128 \
-            --fast-list \
-            --delete-after \
-            --exclude ".git/**" \
-            --exclude ".github/**" \
-            --progress
+          # 2. Lấy danh sách file ảnh thêm/sửa
+          git diff --name-only --diff-filter=AM HEAD~1 HEAD | grep -E '\.(png|PNG|jpg|jpeg|webp)$' > added_files.txt || true
+
+          # 3. Lấy danh sách file ảnh bị xóa
+          git diff --name-only --diff-filter=D HEAD~1 HEAD | grep -E '\.(png|PNG|jpg|jpeg|webp)$' > deleted_files.txt || true
+
+          # 4. Chỉ upload đúng các file trong danh sách (KHÔNG scan cả bucket)
+          if [ -s added_files.txt ]; then
+            echo "Uploading changed files:"
+            cat added_files.txt
+            rclone copy . "r2:${R2_BUCKET_NAME}" --files-from added_files.txt --no-check-dest
+          else
+            echo "No added or modified image files."
+          fi
+
+          # 5. Xóa các file bị xóa khỏi R2
+          if [ -s deleted_files.txt ]; then
+            echo "Deleting removed files:"
+            cat deleted_files.txt
+            while IFS= read -r file; do
+              rclone deletefile "r2:${R2_BUCKET_NAME}/$file"
+            done < deleted_files.txt
+          else
+            echo "No deleted image files."
+          fi
