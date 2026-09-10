@@ -39,34 +39,54 @@ jobs:
         run: |
           ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 
-          # 1. Bắt danh sách file thêm/sửa
+          # 1. Bắt danh sách file thêm/sửa bằng Git
           git diff --name-only --diff-filter=AM HEAD~1 HEAD | grep -iE '\.(png|jpg|jpeg|webp)$' > added_files.txt || true
 
-          # 2. Bắt danh sách file bị xóa
+          # 2. Bắt danh sách file bị xóa bằng Git
           git diff --name-only --diff-filter=D HEAD~1 HEAD | grep -iE '\.(png|jpg|jpeg|webp)$' > deleted_files.txt || true
 
-          # 3. Upload từng file bằng AWS CLI (Không scan bucket, 0 tốn Class A, 100% tương thích R2)
+          # 3. Upload file thay đổi song song (Tối đa 10 luồng cùng lúc, không scan bucket, 0 tốn Class A)
           if [ -s added_files.txt ]; then
-            echo "Uploading changed files:"
+            echo "Uploading changed files in parallel:"
             cat added_files.txt
+
+            MAX_JOBS=10
+            COUNT=0
+
             while IFS= read -r file; do
               if [ -f "$file" ]; then
                 echo "Uploading: $file"
-                aws s3 cp "$file" "s3://${R2_BUCKET_NAME}/$file" --endpoint-url "$ENDPOINT"
+                aws s3 cp "$file" "s3://${R2_BUCKET_NAME}/$file" --endpoint-url "$ENDPOINT" &
+                
+                ((COUNT++))
+                if (( COUNT % MAX_JOBS == 0 )); then
+                  wait
+                fi
               fi
             done < added_files.txt
+            wait
           else
             echo "No added or modified image files."
           fi
 
-          # 4. Xóa file tương ứng trên R2
+          # 4. Xóa file đã bị xóa trên GitHub khỏi R2 (Chạy song song)
           if [ -s deleted_files.txt ]; then
             echo "Deleting removed files:"
             cat deleted_files.txt
+
+            MAX_JOBS=10
+            COUNT=0
+
             while IFS= read -r file; do
               echo "Deleting: $file"
-              aws s3 rm "s3://${R2_BUCKET_NAME}/$file" --endpoint-url "$ENDPOINT"
+              aws s3 rm "s3://${R2_BUCKET_NAME}/$file" --endpoint-url "$ENDPOINT" &
+
+              ((COUNT++))
+              if (( COUNT % MAX_JOBS == 0 )); then
+                wait
+              fi
             done < deleted_files.txt
+            wait
           else
             echo "No deleted image files."
           fi
