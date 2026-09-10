@@ -24,7 +24,6 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      # BẮT BUỘC có fetch-depth: 2 để git diff đọc được HEAD~1
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
@@ -40,7 +39,7 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
         run: |
-          # 1. Cấu hình Rclone
+          # 1. Cấu hình Rclone (Loại bỏ acl=public-read)
           mkdir -p ~/.config/rclone
           cat <<EOF > ~/.config/rclone/rclone.conf
           [r2]
@@ -49,25 +48,28 @@ jobs:
           access_key_id = ${R2_ACCESS_KEY_ID}
           secret_access_key = ${R2_SECRET_ACCESS_KEY}
           endpoint = https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com
-          acl = public-read
+          region = auto
           EOF
 
-          # 2. Lấy danh sách file ảnh thêm/sửa (không phân biệt hoa/thường)
+          # 2. Bắt danh sách file ảnh thêm/sửa bằng git
           git diff --name-only --diff-filter=AM HEAD~1 HEAD | grep -iE '\.(png|jpg|jpeg|webp)$' > added_files.txt || true
 
-          # 3. Lấy danh sách file ảnh bị xóa
+          # 3. Bắt danh sách file ảnh bị xóa
           git diff --name-only --diff-filter=D HEAD~1 HEAD | grep -iE '\.(png|jpg|jpeg|webp)$' > deleted_files.txt || true
 
-          # 4. Upload file thay đổi (Không scan bucket, 0 tốn Class A)
+          # 4. Upload file lẻ (Tắt kiểm tra ACL & Bucket để không dính 403)
           if [ -s added_files.txt ]; then
             echo "Uploading changed files:"
             cat added_files.txt
-            rclone copy . "r2:${R2_BUCKET_NAME}" --files-from added_files.txt --no-check-dest
+            rclone copy . "r2:${R2_BUCKET_NAME}" \
+              --files-from added_files.txt \
+              --no-check-dest \
+              --s3-no-check-bucket
           else
-            echo "No added or modified image files in this commit."
+            echo "No added or modified image files."
           fi
 
-          # 5. Xóa file đã bị xóa khỏi R2
+          # 5. Xóa file tương ứng trên R2
           if [ -s deleted_files.txt ]; then
             echo "Deleting removed files:"
             cat deleted_files.txt
