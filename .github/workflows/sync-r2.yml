@@ -21,14 +21,16 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
+      # Cập nhật lên v5 để dùng Node.js mới nhất
       - name: Checkout Code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
-          fetch-depth: 2 # Lấy commit hiện tại và commit trước đó để so sánh
+          fetch-depth: 2
 
+      # Cập nhật lên v46
       - name: Get Changed Files
         id: changed-files
-        uses: tj-actions/changed-files@v45
+        uses: tj-actions/changed-files@v46
         with:
           files: |
             **/*.png
