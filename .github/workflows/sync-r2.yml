@@ -36,6 +36,10 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
         run: |
+          # Làm sạch biến môi trường (xóa khoảng trắng thừa nếu có)
+          ACCOUNT_ID=$(echo "${R2_ACCOUNT_ID}" | xargs)
+          BUCKET_NAME=$(echo "${R2_BUCKET_NAME}" | xargs)
+
           mkdir -p ~/.config/rclone
           cat <<EOF > ~/.config/rclone/rclone.conf
           [r2]
@@ -43,7 +47,7 @@ jobs:
           provider = Cloudflare
           access_key_id = ${R2_ACCESS_KEY_ID}
           secret_access_key = ${R2_SECRET_ACCESS_KEY}
-          endpoint = https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com
+          endpoint = https://${ACCOUNT_ID}.r2.cloudflarestorage.com
           region = auto
           EOF
 
@@ -53,13 +57,13 @@ jobs:
           # Lấy danh sách file xóa
           git diff --name-only --diff-filter=D HEAD~1 HEAD | grep -E '\.(png|PNG|jpg|jpeg|webp)$' > deleted_files.txt || true
 
-          # Upload an toàn từng dòng file
+          # Upload an toàn từng dòng file (Thêm cờ --no-check-dest để buộc ghi đè không bị 403)
           if [ -s added_files.txt ]; then
             echo "Uploading added/modified files:"
             while IFS= read -r file; do
               if [ -f "$file" ]; then
                 echo "Syncing: $file"
-                rclone copyto "$file" "r2:${R2_BUCKET_NAME}/$file"
+                rclone copyto --no-check-dest "$file" "r2:${BUCKET_NAME}/$file"
               fi
             done < added_files.txt
           else
@@ -71,7 +75,7 @@ jobs:
             echo "Deleting removed files from R2:"
             while IFS= read -r file; do
               echo "Deleting: $file"
-              rclone deletefile "r2:${R2_BUCKET_NAME}/$file"
+              rclone deletefile "r2:${BUCKET_NAME}/$file"
             done < deleted_files.txt
           else
             echo "No deleted image files."
