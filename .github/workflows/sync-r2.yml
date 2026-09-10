@@ -45,7 +45,7 @@ jobs:
           # 2. Bắt danh sách file bị xóa bằng Git
           git diff --name-only --diff-filter=D HEAD~1 HEAD | grep -iE '\.(png|jpg|jpeg|webp)$' > deleted_files.txt || true
 
-          # 3. Upload file thay đổi song song (25 luồng tối ưu)
+          # 3. Upload file thay đổi song song (25 luồng an toàn)
           if [ -s added_files.txt ]; then
             echo "Uploading changed files in parallel (25 workers):"
             cat added_files.txt
@@ -61,39 +61,31 @@ jobs:
             echo "No added or modified image files."
           fi
 
-          # 4. Xóa siêu tốc (Gộp 1.000 file/request - Xóa 20.000 file chỉ mất vài giây)
+          # 4. Xóa hàng loạt siêu tốc (Sử dụng Bash + jq gom 1000 file/request)
           if [ -s deleted_files.txt ]; then
-            echo "Deleting removed files (Batching 1000 items per request):"
+            echo "Deleting removed files in batches of 1000..."
             cat deleted_files.txt
 
-            # Chuyển danh sách file xóa sang định dạng JSON cho Batch Delete API
-            python3 -c '
-import json, sys
+            # Chia danh sách file xóa thành từng file chứa tối đa 1000 dòng
+            split -l 1000 deleted_files.txt batch_del_
 
-bucket = "'"${R2_BUCKET_NAME}"'"
-endpoint = "'"${ENDPOINT}"'"
+            for batch_file in batch_del_*; do
+              # Tạo payload JSON chuẩn bằng jq
+              jq -n --rawfile lines "$batch_file" '
+                {
+                  Objects: ($lines | split("\n") | map(select(length > 0) | {Key: .})),
+                  Quiet: true
+                }
+              ' > payload.json
 
-with open("deleted_files.txt") as f:
-    files = [line.strip() for line in f if line.strip()]
-
-# Chia nhỏ danh sách thành từng cụm 1000 file
-chunk_size = 1000
-for i in range(0, len(files), chunk_size):
-    chunk = files[i:i + chunk_size]
-    payload = {"Objects": [{"Key": key} for key in chunk], "Quiet": True}
-    with open("batch_delete.json", "w") as out:
-        json.dump(payload, out)
-    
-    import subprocess
-    cmd = [
-        "aws", "s3api", "delete-objects",
-        "--bucket", bucket,
-        "--delete", "file://batch_delete.json",
-        "--endpoint-url", endpoint
-    ]
-    subprocess.run(cmd, check=True)
-    print(f"Deleted batch {i // chunk_size + 1}: {len(chunk)} files")
-'
+              echo "Executing batch delete for $(wc -l < "$batch_file") files..."
+              aws s3api delete-objects \
+                --bucket "$R2_BUCKET_NAME" \
+                --delete file://payload.json \
+                --endpoint-url "$ENDPOINT"
+              
+              rm -f "$batch_file" payload.json
+            done
           else
             echo "No deleted image files."
           fi
