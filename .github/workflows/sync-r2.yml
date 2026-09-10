@@ -29,52 +29,43 @@ jobs:
         with:
           fetch-depth: 2
 
-      - name: Install Rclone
-        run: sudo apt-get update && sudo apt-get install -y rclone
-
-      - name: Configure Rclone & Delta Sync
+      - name: Sync Changed Images using AWS CLI
         env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
         run: |
-          # 1. Cấu hình Rclone (Loại bỏ acl=public-read)
-          mkdir -p ~/.config/rclone
-          cat <<EOF > ~/.config/rclone/rclone.conf
-          [r2]
-          type = s3
-          provider = Cloudflare
-          access_key_id = ${R2_ACCESS_KEY_ID}
-          secret_access_key = ${R2_SECRET_ACCESS_KEY}
-          endpoint = https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com
-          region = auto
-          EOF
+          ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
 
-          # 2. Bắt danh sách file ảnh thêm/sửa bằng git
+          # 1. Bắt danh sách file thêm/sửa
           git diff --name-only --diff-filter=AM HEAD~1 HEAD | grep -iE '\.(png|jpg|jpeg|webp)$' > added_files.txt || true
 
-          # 3. Bắt danh sách file ảnh bị xóa
+          # 2. Bắt danh sách file bị xóa
           git diff --name-only --diff-filter=D HEAD~1 HEAD | grep -iE '\.(png|jpg|jpeg|webp)$' > deleted_files.txt || true
 
-          # 4. Upload file lẻ (Tắt kiểm tra ACL & Bucket để không dính 403)
+          # 3. Upload từng file bằng AWS CLI (Không scan bucket, 0 tốn Class A, 100% tương thích R2)
           if [ -s added_files.txt ]; then
             echo "Uploading changed files:"
             cat added_files.txt
-            rclone copy . "r2:${R2_BUCKET_NAME}" \
-              --files-from added_files.txt \
-              --no-check-dest \
-              --s3-no-check-bucket
+            while IFS= read -r file; do
+              if [ -f "$file" ]; then
+                echo "Uploading: $file"
+                aws s3 cp "$file" "s3://${R2_BUCKET_NAME}/$file" --endpoint-url "$ENDPOINT"
+              fi
+            done < added_files.txt
           else
             echo "No added or modified image files."
           fi
 
-          # 5. Xóa file tương ứng trên R2
+          # 4. Xóa file tương ứng trên R2
           if [ -s deleted_files.txt ]; then
             echo "Deleting removed files:"
             cat deleted_files.txt
             while IFS= read -r file; do
-              rclone deletefile "r2:${R2_BUCKET_NAME}/$file"
+              echo "Deleting: $file"
+              aws s3 rm "s3://${R2_BUCKET_NAME}/$file" --endpoint-url "$ENDPOINT"
             done < deleted_files.txt
           else
             echo "No deleted image files."
