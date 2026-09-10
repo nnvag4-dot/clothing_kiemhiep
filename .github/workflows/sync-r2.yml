@@ -45,13 +45,13 @@ jobs:
           # 2. Bắt danh sách file bị xóa bằng Git
           git diff --name-only --diff-filter=D HEAD~1 HEAD | grep -iE '\.(png|jpg|jpeg|webp)$' > deleted_files.txt || true
 
-          # 3. Upload file thay đổi song song an toàn (Tối đa 10 luồng bằng xargs)
+          # 3. Upload file thay đổi song song an toàn (25 luồng tối ưu cho 2 vCPU)
           if [ -s added_files.txt ]; then
-            echo "Uploading changed files in parallel:"
+            echo "Uploading changed files in parallel (25 workers):"
             cat added_files.txt
 
             export ENDPOINT R2_BUCKET_NAME
-            cat added_files.txt | xargs -P 10 -I {} bash -c '
+            cat added_files.txt | xargs -P 25 -I {} bash -c '
               if [ -f "$1" ]; then
                 echo "Uploading: $1"
                 aws s3 cp "$1" "s3://${R2_BUCKET_NAME}/$1" --endpoint-url "$ENDPOINT"
@@ -61,13 +61,13 @@ jobs:
             echo "No added or modified image files."
           fi
 
-          # 4. Xóa file đã bị xóa trên GitHub khỏi R2 (Song song)
+          # 4. Xóa file đã bị xóa trên GitHub khỏi R2 (25 luồng)
           if [ -s deleted_files.txt ]; then
-            echo "Deleting removed files in parallel:"
+            echo "Deleting removed files in parallel (25 workers):"
             cat deleted_files.txt
 
             export ENDPOINT R2_BUCKET_NAME
-            cat deleted_files.txt | xargs -P 10 -I {} bash -c '
+            cat deleted_files.txt | xargs -P 25 -I {} bash -c '
               echo "Deleting: $1"
               aws s3 rm "s3://${R2_BUCKET_NAME}/$1" --endpoint-url "$ENDPOINT"
             ' _ {}
