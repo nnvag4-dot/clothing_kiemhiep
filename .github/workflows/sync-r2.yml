@@ -35,7 +35,7 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
         run: |
-          # Tạo file cấu hình rclone
+          # 1. Tạo file cấu hình rclone
           mkdir -p ~/.config/rclone
           cat <<EOF > ~/.config/rclone/rclone.conf
           [r2]
@@ -47,10 +47,10 @@ jobs:
           acl = public-read
           EOF
 
-          # Chạy đồng bộ đa luồng siêu tốc (32 luồng song song)
+          # 2. Chạy đồng bộ siêu tốc 64 luồng song song cho 40.000 file
           rclone sync . r2:${R2_BUCKET_NAME} \
-            --transfers 32 \
-            --checkers 64 \
+            --transfers 64 \
+            --checkers 128 \
             --fast-list \
             --delete-after \
             --exclude ".git/**" \
