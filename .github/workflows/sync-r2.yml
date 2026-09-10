@@ -36,7 +36,7 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
         run: |
-          # 1. Cấu hình Rclone
+          # 1. Cấu hình Rclone (Có acl = public-read)
           mkdir -p ~/.config/rclone
           cat <<EOF > ~/.config/rclone/rclone.conf
           [r2]
@@ -45,6 +45,7 @@ jobs:
           access_key_id = ${R2_ACCESS_KEY_ID}
           secret_access_key = ${R2_SECRET_ACCESS_KEY}
           endpoint = https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com
+          acl = public-read
           EOF
 
           # 2. Lấy danh sách file ảnh thêm/sửa
@@ -53,7 +54,7 @@ jobs:
           # 3. Lấy danh sách file ảnh bị xóa
           git diff --name-only --diff-filter=D HEAD~1 HEAD | grep -E '\.(png|PNG|jpg|jpeg|webp)$' > deleted_files.txt || true
 
-          # 4. Chỉ upload đúng các file trong danh sách (KHÔNG scan cả bucket)
+          # 4. Upload đúng file thay đổi (Không scan bucket, tiết kiệm request Class A)
           if [ -s added_files.txt ]; then
             echo "Uploading changed files:"
             cat added_files.txt
@@ -62,7 +63,7 @@ jobs:
             echo "No added or modified image files."
           fi
 
-          # 5. Xóa các file bị xóa khỏi R2
+          # 5. Xóa các file đã bị xóa trên GitHub
           if [ -s deleted_files.txt ]; then
             echo "Deleting removed files:"
             cat deleted_files.txt
