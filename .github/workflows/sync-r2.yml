@@ -1,4 +1,4 @@
-name: Sync Images to Cloudflare R2
+name: Sync Images to Cloudflare R2 (Smart Hybrid)
 
 on:
   push:
@@ -29,7 +29,7 @@ jobs:
         with:
           fetch-depth: 2
 
-      - name: Sync Changed Images using AWS CLI
+      - name: Smart Sync Images to R2
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
@@ -38,54 +38,63 @@ jobs:
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
         run: |
           ENDPOINT="https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
+          THRESHOLD=500  # Ngưỡng: Nếu tổng số file thay đổi > 500 sẽ đổi sang Full Sync
 
-          # 1. Bắt danh sách file thêm/sửa bằng Git
+          # 1. Bắt danh sách file bằng Git
           git diff --name-only --diff-filter=AM HEAD~1 HEAD | grep -iE '\.(png|jpg|jpeg|webp)$' > added_files.txt || true
-
-          # 2. Bắt danh sách file bị xóa bằng Git
           git diff --name-only --diff-filter=D HEAD~1 HEAD | grep -iE '\.(png|jpg|jpeg|webp)$' > deleted_files.txt || true
 
-          # 3. Upload file thay đổi song song (25 luồng an toàn)
-          if [ -s added_files.txt ]; then
-            echo "Uploading changed files in parallel (25 workers):"
-            cat added_files.txt
+          ADDED_COUNT=$(wc -l < added_files.txt)
+          DELETED_COUNT=$(wc -l < deleted_files.txt)
+          TOTAL_CHANGES=$((ADDED_COUNT + DELETED_COUNT))
 
-            export ENDPOINT R2_BUCKET_NAME
-            cat added_files.txt | xargs -P 25 -I {} bash -c '
-              if [ -f "$1" ]; then
-                echo "Uploading: $1"
-                aws s3 cp "$1" "s3://${R2_BUCKET_NAME}/$1" --endpoint-url "$ENDPOINT"
-              fi
-            ' _ {}
+          echo "Detected $ADDED_COUNT added/modified files and $DELETED_COUNT deleted files."
+
+          # 2. KIỂM TRA ĐIỀU KIỆN ĐỂ CHỌN CHẾ ĐỘ
+
+          # Trường hợp A: Thay đổi số lượng lớn (> 500 file) -> Chuyển sang Full Sync qua AWS S3 Sync
+          if [ "$TOTAL_CHANGES" -gt "$THRESHOLD" ]; then
+            echo "================================================="
+            echo "Large changeset detected ($TOTAL_CHANGES files). Switching to FULL SYNC mode..."
+            echo "================================================="
+            
+            # Sử dụng aws s3 sync thay cho rclone để tránh lỗi 403/501
+            aws s3 sync . "s3://${R2_BUCKET_NAME}" \
+              --endpoint-url "$ENDPOINT" \
+              --delete \
+              --exclude "*" \
+              --include "*.png" --include "*.PNG" \
+              --include "*.jpg" --include "*.JPG" \
+              --include "*.jpeg" --include "*.JPEG" \
+              --include "*.webp" --include "*.WEBP"
+
+          # Trường hợp B: Thay đổi ít (< 500 file) -> Chế độ Delta Sync siêu tốc (25 workers)
+          elif [ "$TOTAL_CHANGES" -gt 0 ]; then
+            echo "================================================="
+            echo "Small changeset detected ($TOTAL_CHANGES files). Using FAST DELTA SYNC mode..."
+            echo "================================================="
+
+            # Upload file thay đổi
+            if [ -s added_files.txt ]; then
+              export ENDPOINT R2_BUCKET_NAME
+              cat added_files.txt | xargs -P 25 -I {} bash -c '
+                if [ -f "$1" ]; then
+                  echo "Uploading: $1"
+                  aws s3 cp "$1" "s3://${R2_BUCKET_NAME}/$1" --endpoint-url "$ENDPOINT"
+                fi
+              ' _ {}
+            fi
+
+            # Xóa file bị hủy
+            if [ -s deleted_files.txt ]; then
+              split -l 1000 deleted_files.txt batch_del_
+              for batch_file in batch_del_*; do
+                jq -n --rawfile lines "$batch_file" '{Objects: ($lines | split("\n") | map(select(length > 0) | {Key: .})), Quiet: true}' > payload.json
+                aws s3api delete-objects --bucket "$R2_BUCKET_NAME" --delete file://payload.json --endpoint-url "$ENDPOINT"
+                rm -f "$batch_file" payload.json
+              done
+            fi
+
           else
-            echo "No added or modified image files."
-          fi
-
-          # 4. Xóa hàng loạt siêu tốc (Sử dụng Bash + jq gom 1000 file/request)
-          if [ -s deleted_files.txt ]; then
-            echo "Deleting removed files in batches of 1000..."
-            cat deleted_files.txt
-
-            # Chia danh sách file xóa thành từng file chứa tối đa 1000 dòng
-            split -l 1000 deleted_files.txt batch_del_
-
-            for batch_file in batch_del_*; do
-              # Tạo payload JSON chuẩn bằng jq
-              jq -n --rawfile lines "$batch_file" '
-                {
-                  Objects: ($lines | split("\n") | map(select(length > 0) | {Key: .})),
-                  Quiet: true
-                }
-              ' > payload.json
-
-              echo "Executing batch delete for $(wc -l < "$batch_file") files..."
-              aws s3api delete-objects \
-                --bucket "$R2_BUCKET_NAME" \
-                --delete file://payload.json \
-                --endpoint-url "$ENDPOINT"
-              
-              rm -f "$batch_file" payload.json
-            done
-          else
-            echo "No deleted image files."
+            echo "No image changes detected in this commit."
           fi
