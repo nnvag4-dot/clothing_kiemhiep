@@ -24,7 +24,7 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 2 # Lấy commit hiện tại và commit ngay trước đó
+          fetch-depth: 2
 
       - name: Install Rclone
         run: sudo apt-get update && sudo apt-get install -y rclone
@@ -36,7 +36,7 @@ jobs:
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
         run: |
-          # 1. Cấu hình Rclone
+          # 1. Cấu hình Rclone (Đã xóa dòng acl=public-read gây lỗi 403 trên R2)
           mkdir -p ~/.config/rclone
           cat <<EOF > ~/.config/rclone/rclone.conf
           [r2]
@@ -45,7 +45,6 @@ jobs:
           access_key_id = ${R2_ACCESS_KEY_ID}
           secret_access_key = ${R2_SECRET_ACCESS_KEY}
           endpoint = https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com
-          acl = public-read
           EOF
 
           # 2. Lấy danh sách file ảnh mới / sửa (Added / Modified)
