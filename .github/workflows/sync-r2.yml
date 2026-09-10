@@ -13,6 +13,11 @@ on:
       - '**/*.webp'
   workflow_dispatch:
 
+# Tự động hủy job cũ nếu bạn vừa push commit mới (tránh nghẽn hàng chờ)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -20,14 +25,34 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Sync to Cloudflare R2
-        uses: jakejarvis/s3-sync-action@master
-        with:
-          args: --acl public-read --follow-symlinks --delete
+      - name: Install Rclone
+        run: sudo apt-get update && sudo apt-get install -y rclone
+
+      - name: Configure Rclone & Sync to R2
         env:
-          AWS_S3_BUCKET: ${{ secrets.R2_BUCKET_NAME }}
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_S3_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
-          SOURCE_DIR: ''
-          DEST_DIR: ''
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+        run: |
+          # Tạo file cấu hình rclone
+          mkdir -p ~/.config/rclone
+          cat <<EOF > ~/.config/rclone/rclone.conf
+          [r2]
+          type = s3
+          provider = Cloudflare
+          access_key_id = ${R2_ACCESS_KEY_ID}
+          secret_access_key = ${R2_SECRET_ACCESS_KEY}
+          endpoint = https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com
+          acl = public-read
+          EOF
+
+          # Chạy đồng bộ đa luồng siêu tốc (32 luồng song song)
+          rclone sync . r2:${R2_BUCKET_NAME} \
+            --transfers 32 \
+            --checkers 64 \
+            --fast-list \
+            --delete-after \
+            --exclude ".git/**" \
+            --exclude ".github/**" \
+            --progress
