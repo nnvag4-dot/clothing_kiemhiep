@@ -24,34 +24,19 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 2
-
-      # Dùng @v4 để tự động cập nhật bản vá mới nhất chạy Node 24
-      - name: Get Changed Files
-        id: changed-files
-        uses: tj-actions/changed-files@v4
-        with:
-          files: |
-            **/*.png
-            **/*.PNG
-            **/*.jpg
-            **/*.jpeg
-            **/*.webp
+          fetch-depth: 2 # Lấy commit hiện tại và commit ngay trước đó
 
       - name: Install Rclone
-        if: steps.changed-files.outputs.any_changed == 'true'
         run: sudo apt-get update && sudo apt-get install -y rclone
 
       - name: Sync Only Changed Files
-        if: steps.changed-files.outputs.any_changed == 'true'
         env:
           R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
-          ADDED_FILES: ${{ steps.changed-files.outputs.all_changed_files }}
-          DELETED_FILES: ${{ steps.changed-files.outputs.deleted_files }}
         run: |
+          # 1. Cấu hình Rclone
           mkdir -p ~/.config/rclone
           cat <<EOF > ~/.config/rclone/rclone.conf
           [r2]
@@ -63,20 +48,32 @@ jobs:
           acl = public-read
           EOF
 
-          # 1. Đẩy các file mới / file vừa sửa lên R2
+          # 2. Lấy danh sách file ảnh mới / sửa (Added / Modified)
+          ADDED_FILES=$(git diff --name-only --diff-filter=AM HEAD~1 HEAD | grep -E '\.(png|PNG|jpg|jpeg|webp)$' || true)
+
+          # 3. Lấy danh sách file ảnh bị xóa (Deleted)
+          DELETED_FILES=$(git diff --name-only --diff-filter=D HEAD~1 HEAD | grep -E '\.(png|PNG|jpg|jpeg|webp)$' || true)
+
+          # 4. Upload các file mới / sửa lên Cloudflare R2
           if [ -n "$ADDED_FILES" ]; then
-            echo "Uploading added/modified files..."
+            echo "Uploading added/modified files:"
+            echo "$ADDED_FILES"
             for file in $ADDED_FILES; do
               if [ -f "$file" ]; then
                 rclone copyto "$file" "r2:${R2_BUCKET_NAME}/$file"
               fi
             done
+          else
+            echo "No added or modified image files."
           fi
 
-          # 2. Xóa các file đã bị xóa trên GitHub khỏi R2
+          # 5. Xóa các file đã bị xóa trên GitHub khỏi Cloudflare R2
           if [ -n "$DELETED_FILES" ]; then
-            echo "Deleting removed files from R2..."
+            echo "Deleting removed files from R2:"
+            echo "$DELETED_FILES"
             for file in $DELETED_FILES; do
               rclone deletefile "r2:${R2_BUCKET_NAME}/$file"
             done
+          else
+            echo "No deleted image files."
           fi
